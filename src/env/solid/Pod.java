@@ -4,6 +4,13 @@ import cartago.Artifact;
 import cartago.OPERATION;
 import cartago.OpFeedbackParam;
 
+import java.io.BufferedReader;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.net.HttpURLConnection;
+import java.net.URL;
+
 /**
  * A CArtAgO artifact that agent can use to interact with LDP containers in a Solid pod.
  */
@@ -29,7 +36,28 @@ public class Pod extends Artifact {
    */
     @OPERATION
     public void createContainer(String containerName) {
-        log("1. Implement the method createContainer()");
+        String containerURL = buildResourceURL(containerName, true);
+
+        try {
+            int responseCode = sendHttpRequest(containerURL, "GET", "text/turtle", null);
+            if (responseCode == 200) {
+                log("Container already exists: " + containerURL);
+                return;
+            }
+        } catch (IOException e) {
+            log("Container not found, proceeding with creation: " + containerURL);
+        }
+
+        try {
+            int responseCode = sendHttpRequest(containerURL, "PUT", "text/turtle", "");
+            if (responseCode == 201 || responseCode == 200 || responseCode == 204) {
+                log("Container created successfully: " + containerURL);
+            } else {
+                log("Failed to create container. Response code: " + responseCode);
+            }
+        } catch (IOException e) {
+            log("Error while creating container: " + e.getMessage());
+        }
     }
 
   /**
@@ -41,7 +69,19 @@ public class Pod extends Artifact {
    */
     @OPERATION
     public void publishData(String containerName, String fileName, Object[] data) {
-        log("2. Implement the method publishData()");
+        String fileURL = buildResourceURL(containerName + "/" + fileName, false);
+        String dataString = createStringFromArray(data);
+
+        try {
+            int responseCode = sendHttpRequest(fileURL, "PUT", "text/plain; charset=UTF-8", dataString);
+            if (responseCode == 201 || responseCode == 200 || responseCode == 204 || responseCode == 205) {
+                log("Data published successfully: " + fileURL);
+            } else {
+                log("Failed to publish data. Response code: " + responseCode);
+            }
+        } catch (IOException e) {
+            log("Error while publishing data: " + e.getMessage());
+        }
     }
 
   /**
@@ -64,23 +104,38 @@ public class Pod extends Artifact {
    * @return An array whose elements are the data read from the .txt file
    */
     public Object[] readData(String containerName, String fileName) {
-        log("3. Implement the method readData(). Currently, the method returns mock data");
+        String fileURL = buildResourceURL(containerName + "/" + fileName, false);
 
-        // Remove the following mock responses once you have implemented the method
-        switch(fileName) {
-            case "watchlist.txt":
-                Object[] mockWatchlist = new Object[]{"The Matrix", "Inception", "Avengers: Endgame"};
-                return mockWatchlist;
-            case "sleep.txt":
-                Object[] mockSleepData = new Object[]{"6", "7", "5"};
-                return mockSleepData;
-            case "trail.txt":
-                Object[] mockTrailData = new Object[]{"3", "5.5", "5.5"};
-                return mockTrailData; 
-            default:
-                return new Object[0];
+        StringBuilder response = new StringBuilder();
+        HttpURLConnection connection = null;
+        try {
+            URL url = new URL(fileURL);
+            connection = (HttpURLConnection) url.openConnection();
+            connection.setRequestMethod("GET");
+            connection.connect();
+
+            int responseCode = connection.getResponseCode();
+            if (responseCode == 200) {
+                try (BufferedReader reader = new BufferedReader(
+                        new InputStreamReader(connection.getInputStream(), "UTF-8"))) {
+                    String line;
+                    while ((line = reader.readLine()) != null) {
+                        response.append(line).append("\n");
+                    }
+                }
+                // Convert response to an array using your helper method
+                return createArrayFromString(response.toString());
+            } else {
+                log("Failed to read data. Response code: " + responseCode);
+            }
+        } catch (IOException e) {
+            log("Error while reading data: " + e.getMessage());
+        } finally {
+            if (connection != null) {
+                connection.disconnect();
+            }
         }
-
+        return new Object[0];
     }
 
   /**
@@ -126,4 +181,38 @@ public class Pod extends Artifact {
         System.arraycopy(data, 0, allData, oldData.length, data.length);
         publishData(containerName, fileName, allData);
     }
+
+
+    // Helper method to build a URL from the pod URL and resource path.
+    private String buildResourceURL(String resourcePath, boolean ensureTrailingSlash) {
+        StringBuilder sb = new StringBuilder();
+        if (!podURL.endsWith("/")) {
+            sb.append(podURL).append("/");
+        } else {
+            sb.append(podURL);
+        }
+        sb.append(resourcePath);
+        if (ensureTrailingSlash && !sb.toString().endsWith("/")) {
+            sb.append("/");
+        }
+        return sb.toString();
+    }
+
+    // Common HTTP request executor. If data is null, no output is written.
+    private int sendHttpRequest(String targetUrl, String method, String contentType, String data) throws IOException {
+        URL url = new URL(targetUrl);
+        HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+        connection.setRequestMethod(method);
+        if (data != null) {
+            connection.setDoOutput(true);
+            connection.setRequestProperty("Content-Type", contentType);
+            try (OutputStream os = connection.getOutputStream()) {
+                byte[] input = data.getBytes("UTF-8");
+                os.write(input, 0, input.length);
+            }
+        }
+        connection.connect();
+        return connection.getResponseCode();
+    }
+
 }
